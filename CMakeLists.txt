@@ -4,20 +4,22 @@ project(MegariunProject LANGUAGES C CXX)
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
-# ---- Pastas do projeto ----
-set(SRC_DIR         "${CMAKE_SOURCE_DIR}/src")
-set(TP_DIR          "${CMAKE_SOURCE_DIR}/third-party")
+# ---- Pastas ----
+set(SRC_DIR    "${CMAKE_SOURCE_DIR}/src")
+set(INC_DIR    "${CMAKE_SOURCE_DIR}/include")
+set(ASSETS_DIR "${CMAKE_SOURCE_DIR}/assets")
+set(TP_DIR     "${CMAKE_SOURCE_DIR}/third-party")
 
-# GLFW (headers e lib pré-compilada)
-set(GLFW_INC_DIR    "${TP_DIR}/include")            # contém include/GLFW/...
-set(GLFW_LIB_FILE   "${TP_DIR}/libs/glfw3.lib")
+# GLFW (headers + lib prebuilt no Windows)
+set(GLFW_INC_DIR  "${TP_DIR}/include")           # contém include/GLFW/...
+set(GLFW_LIB_FILE "${TP_DIR}/libs/glfw3.lib")    # .lib estática do GLFW (Windows)
 
-# GLAD (loader gerado)
-set(GLAD_INC_DIR    "${TP_DIR}/glad/include")
-set(GLAD_SRC_FILE   "${TP_DIR}/glad/src/glad.c")
+# GLAD
+set(GLAD_INC_DIR  "${TP_DIR}/glad/include")
+set(GLAD_SRC_FILE "${TP_DIR}/glad/src/glad.c")
 
 # Dear ImGui (branch docking)
-set(IMGUI_DIR       "${TP_DIR}/imgui")
+set(IMGUI_DIR "${TP_DIR}/imgui")
 set(IMGUI_CORE_SOURCES
     "${IMGUI_DIR}/imgui.cpp"
     "${IMGUI_DIR}/imgui_draw.cpp"
@@ -29,76 +31,98 @@ set(IMGUI_BACKENDS_SOURCES
     "${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp"
 )
 
-# ---- Fontes do seu app ----
-set(PROJ_SOURCES
-  "${SRC_DIR}/MegariunProject.cpp"
+# GLM (header-only via submodule)
+set(GLM_INC_DIR "${TP_DIR}/glm")
+add_library(glm INTERFACE)
+target_include_directories(glm INTERFACE "${GLM_INC_DIR}")
+
+# ---- Fontes do app (varre recursivo) ----
+file(GLOB_RECURSE APP_SOURCES CONFIGURE_DEPENDS
+  "${SRC_DIR}/*.c"  "${SRC_DIR}/*.cc"  "${SRC_DIR}/*.cpp"
 )
+
+# (Opcional) listar headers no Solution Explorer
+file(GLOB_RECURSE APP_HEADERS CONFIGURE_DEPENDS
+  "${INC_DIR}/*.h"  "${INC_DIR}/*.hpp"
+)
+
+# Exclui o arquivo legado (mantém no repo mas não compila)
+if (EXISTS "${SRC_DIR}/MegariunProject.cpp")
+  list(FILTER APP_SOURCES EXCLUDE REGEX ".*/MegariunProject\\.cpp$")
+endif()
+
+# GLAD (anexa se existir)
 if (EXISTS "${GLAD_SRC_FILE}")
-  list(APPEND PROJ_SOURCES "${GLAD_SRC_FILE}")
+  list(APPEND APP_SOURCES "${GLAD_SRC_FILE}")
 endif()
 
 # ---- Executável ----
-add_executable(${PROJECT_NAME} ${PROJ_SOURCES} "include/Shader.h")
+add_executable(${PROJECT_NAME} ${APP_SOURCES} ${APP_HEADERS} "include/Canvas.h")
 
-# ---- Biblioteca ImGui (core + backends) ----
+# ---- Biblioteca ImGui ----
 add_library(imgui STATIC
-    ${IMGUI_CORE_SOURCES}
-    ${IMGUI_BACKENDS_SOURCES}
- "include/Shader.h")
-
-# Includes para ImGui (PUBLIC para propagar ao executável)
+  ${IMGUI_CORE_SOURCES}
+  ${IMGUI_BACKENDS_SOURCES}
+ "include/Canvas.h")
 target_include_directories(imgui PUBLIC
-    "${IMGUI_DIR}"
-    "${IMGUI_DIR}/backends"
-    "${GLAD_INC_DIR}"     # necessário pelo backend OpenGL3 do ImGui
-    "${GLFW_INC_DIR}"
+  "${IMGUI_DIR}"
+  "${IMGUI_DIR}/backends"
+  "${GLAD_INC_DIR}"
+  "${GLFW_INC_DIR}"
 )
-
-# Informe ao backend OpenGL do ImGui que você usa GLAD como loader
 target_compile_definitions(imgui PUBLIC IMGUI_IMPL_OPENGL_LOADER_GLAD)
 
-# ---- Includes do executável ----
+option(IMGUI_WITH_DEMO "Build Dear ImGui demo window" OFF)
+if (IMGUI_WITH_DEMO)
+  target_sources(imgui PRIVATE "${IMGUI_DIR}/imgui_demo.cpp")
+endif()
+
+# ---- Includes do executável (AQUI resolve o 'cannot open Globals.h') ----
 target_include_directories(${PROJECT_NAME} PRIVATE
-  "${SRC_DIR}"
+  "${INC_DIR}"
+  "${SRC_DIR}"          # se você tiver headers internos em src/
   "${GLFW_INC_DIR}"
   "${GLAD_INC_DIR}"
   "${IMGUI_DIR}"
   "${IMGUI_DIR}/backends"
 )
 
-# ---- Defines úteis do executável ----
+# ---- Defines úteis ----
+file(TO_CMAKE_PATH "${ASSETS_DIR}/shaders" SHADERS_DIR_NORM)
 target_compile_definitions(${PROJECT_NAME} PRIVATE
-  GLFW_INCLUDE_NONE     # vamos incluir GLAD antes de GLFW
-  NOMINMAX              # evita conflito com macros do Windows
+  GLFW_INCLUDE_NONE
+  NOMINMAX
+  SHADERS_DIR="${SHADERS_DIR_NORM}"
 )
 
-# ---- Linkagem por plataforma ----
+# ---- Linkagem ----
 if (WIN32)
-  # Windows: link com GLFW prebuilt, OpenGL32 e libs do sistema
   target_link_libraries(${PROJECT_NAME} PRIVATE
     imgui
+    glm
     "${GLFW_LIB_FILE}"
     opengl32 user32 gdi32 shell32
   )
 else()
-  # Linux/macOS (ajuste os nomes/caminhos conforme seu ambiente)
   find_package(OpenGL REQUIRED)
   target_link_libraries(${PROJECT_NAME} PRIVATE
     imgui
-    "${TP_DIR}/libs/libglfw3.a"  # ajuste se necessário
+    glm
+    "${TP_DIR}/libs/libglfw3.a"   # ajuste conforme seu ambiente
     OpenGL::GL
   )
 endif()
 
-# ---- (Opcional) Diretório de trabalho no Visual Studio ----
-set_property(TARGET ${PROJECT_NAME} PROPERTY
-  VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+# ---- Copiar shaders p/ pasta do executável (Debug/Release) ----
+add_custom_command(TARGET ${PROJECT_NAME} POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_directory
+          "${ASSETS_DIR}/shaders"
+          "$<TARGET_FILE_DIR:${PROJECT_NAME}>/assets/shaders"
+  COMMENT "Copiando shaders para a pasta de saída..."
 )
 
-# ---- (Opcional) Mostrar src/ como árvore no Solution Explorer ----
-# source_group(TREE "${SRC_DIR}" FILES ${PROJ_SOURCES})
-
-# ---- (Opcional) Saída do exe em bin/<Config> ----
-# set_target_properties(${PROJECT_NAME} PROPERTIES
-#   RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin/$<CONFIG>"
-# )
+# ---- Qualidade de vida (VS) ----
+source_group(TREE "${CMAKE_SOURCE_DIR}" FILES ${APP_SOURCES} ${APP_HEADERS})
+set_property(TARGET ${PROJECT_NAME} PROPERTY
+  VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:${PROJECT_NAME}>"
+)
